@@ -23,13 +23,34 @@ data "aws_ami" "aws_linux" {
   }
 }
 
+# LOCALS
+locals {
+  common_tags = {
+    BillingCode = var.billing_code_tag
+    Environment = var.environment_tag
+  }
+
+  s3_bucket_name = "${var.bucket_name_prefix}-${var.environment_tag}-${random_integer.rand.result}"
+}
+
+# RESOURCES
+#Random TD
+resource "random_integer" "rand" {
+  min = 10000
+  max = 99999
+}
+
 resource "aws_vpc" "vpc" {
   cidr_block = var.network_address_space
   enable_dns_hostnames = "true"
+
+  tags = merge(local.common_tags, { Name = "${var.environment_tag}-vpc"})
 }
 
 resource "aws_internet_gateway" "igw" {
   vpc_id = aws_vpc.vpc.id
+
+  tags = merge(local.common_tags, { Name = "${var.environment_tag}-igw"})
 }
 
 resource "aws_subnet" "subnet1" {
@@ -140,6 +161,7 @@ resource "aws_instance" "nginx1" {
   subnet_id = aws_subnet.subnet1.id
   key_name               = var.key_name
   vpc_security_group_ids = [aws_security_group.allow-ssh.id]
+  iam_instance_profile = aws_iam_instance_profile.nginx_profile.name
 
   connection {
     type        = "ssh"
@@ -148,13 +170,54 @@ resource "aws_instance" "nginx1" {
     private_key = file(var.private_key_path)
   }
 
+  provisioner "file" {
+    content = <<EOF
+access_key =
+secret_key =
+security_token =
+use_https = True
+bucket_location = EU
+
+
+    EOF
+    destination = "/home/ec2-user/.s3cfg"
+  }
+
+  provisioner "file" {
+    content = <<EOF
+/var/log/nginx/*log {
+    daily
+    rotate 10
+    missingok
+    compress
+    sharedscripts
+    postrotate
+    endscript
+    lastaction
+        INSTANCE_ID=`curl --silent http://169.254.169.254/latest/meta-data/instance-id`
+        sudo /usr/local/bin/s3cmd sync --config=/home/ec2-user/.s3cfg /var/log/nginx/ s3://${aws_s3_bucket.web_bucket.id}/nginx/$INSTANCE_ID/
+    endscript
+}
+    EOF
+    destination = "/home/ec2-user/nginx"
+  }
+
   provisioner "remote-exec" {
     inline = [
       "sudo yum install nginx -y",
       "sudo service nginx start",
-      "echo '<html><head><title>Blue Team Server</title></head><body style=\"background-color:#1F778D\"><p style=\"text-align: center;\"><span style=\"color:#FFFFFF;\"><span style=\"font-size:28px;\">Blue Team</span></span></p></body></html>' | sudo tee /usr/share/nginx/html/index.html"
+      "sudo cp /home/ec2-user/.s3cfg /root/.s3cfg",
+      "sudo cp /home/ec2-user/nginx /etc/logrotate.d/nginx",
+      "sudo pip install s3cmd",
+      "s3cmd get s3://${aws_s3_bucket.web_bucket.id}/website/index.html .",
+      "s3cmd get s3://${aws_s3_bucket.web_bucket.id}/website/Globo_logo_Vert.png .",
+      "sudo cp /home/ec2-user/index.html /usr/share/nginx/html/index.html",
+      "sudo cp /home/ec2-user/Globo_logo_Vert.png /usr/share/nginx/html/Globo_logo_Vert.png",
+      "sudo logrotate -f /etc/logrotate.conf"
     ]
   }
+
+  tags = merge(local.common_tags, { Name = "${var.environment_tag}-nginx1" })
 }
 
 resource "aws_instance" "nginx2" {
@@ -163,6 +226,7 @@ resource "aws_instance" "nginx2" {
   subnet_id = aws_subnet.subnet2.id
   key_name               = var.key_name
   vpc_security_group_ids = [aws_security_group.allow-ssh.id]
+  iam_instance_profile   = aws_iam_instance_profile.nginx_profile.name
 
   connection {
     type        = "ssh"
@@ -171,16 +235,129 @@ resource "aws_instance" "nginx2" {
     private_key = file(var.private_key_path)
   }
 
+  provisioner "file" {
+    content = <<EOF
+access_key =
+secret_key =
+security_token =
+use_https = True
+bucket_location = EU
+EOF
+    destination = "/home/ec2-user/.s3cfg"
+  }
+
+  provisioner "file" {
+    content = <<EOF
+/var/log/nginx/*log {
+    daily
+    rotate 10
+    missingok
+    compress
+    sharedscripts
+    postrotate
+    endscript
+    lastaction
+        INSTANCE_ID=`curl --silent http://169.254.169.254/latest/meta-data/instance-id`
+        sudo /usr/local/bin/s3cmd sync --config=/home/ec2-user/.s3cfg /var/log/nginx/ s3://${aws_s3_bucket.web_bucket.id}/nginx/$INSTANCE_ID/
+    endscript
+}
+EOF
+    destination = "/home/ec2-user/nginx"
+  }
+
   provisioner "remote-exec" {
     inline = [
       "sudo yum install nginx -y",
       "sudo service nginx start",
-      "echo '<html><head><title>Green Team Server</title></head><body style=\"background-color:#77A032\"><p style=\"text-align: center;\"><span style=\"color:#FFFFFF;\"><span style=\"font-size:28px;\">Blue Team</span></span></p></body></html>' | sudo tee /usr/share/nginx/html/index.html"
+      "sudo cp /home/ec2-user/.s3cfg /root/.s3cfg",
+      "sudo cp /home/ec2-user/nginx /etc/logrotate.d/nginx",
+      "sudo pip install s3cmd",
+      "s3cmd get s3://${aws_s3_bucket.web_bucket.id}/website/index.html .",
+      "s3cmd get s3://${aws_s3_bucket.web_bucket.id}/website/Globo_logo_Vert.png .",
+      "sudo cp /home/ec2-user/index.html /usr/share/nginx/html/index.html",
+      "sudo cp /home/ec2-user/Globo_logo_Vert.png /usr/share/nginx/html/Globo_logo_Vert.png",
+      "sudo logrotate -f /etc/logrotate.conf"
     ]
   }
+
+  tags = merge(local.common_tags, { Name = "${var.environment_tag}-nginx2" })
 }
 
 
 output "aws_public_ip" {
   value = aws_elb.web.dns_name
+}
+
+# S3 Bucket config#
+resource "aws_iam_role" "allow_nginx_s3" {
+  name = "allow_nginx_s3"
+
+  assume_role_policy = <<EOF
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Action": "sts:AssumeRole",
+      "Principal": {
+        "Service": "ec2.amazonaws.com"
+      },
+      "Effect": "Allow",
+      "Sid": ""
+    }
+  ]
+}
+EOF
+}
+
+resource "aws_iam_instance_profile" "nginx_profile" {
+  name = "nginx_profile"
+  role = aws_iam_role.allow_nginx_s3.name
+}
+
+resource "aws_iam_role_policy" "allow_s3_all" {
+  name = "allow_s3_all"
+  role = aws_iam_role.allow_nginx_s3.name
+
+  policy = <<EOF
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Action": [
+        "s3:*"
+      ],
+      "Effect": "Allow",
+      "Resource": [
+                "arn:aws:s3:::${local.s3_bucket_name}",
+                "arn:aws:s3:::${local.s3_bucket_name}/*"
+            ]
+    }
+  ]
+}
+EOF
+
+}
+
+resource "aws_s3_bucket" "web_bucket" {
+  bucket        = local.s3_bucket_name
+  acl           = "private"
+  force_destroy = true
+
+  tags = merge(local.common_tags, { Name = "${var.environment_tag}-web-bucket" })
+
+}
+
+
+resource "aws_s3_bucket_object" "website" {
+  bucket = aws_s3_bucket.web_bucket.bucket
+  key = "/website/index.html"
+  source = "./index.html"
+
+}
+
+resource "aws_s3_bucket_object" "graphic" {
+  bucket = aws_s3_bucket.web_bucket.bucket
+  key = "/website/Globo_logo_Vert.png"
+  source = "./Globo_logo_Vert.png"
+
 }

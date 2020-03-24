@@ -19,3 +19,9 @@ variable "subnet1_address_space" {
 variable "subent2_address_space" {
   default = "10.1.1.0/24"
 }
+
+variable "bucket_name_prefix" {}
+
+variable "billing_code_tag" {}
+
+variable "environment_tag" {}
