@@ -1,0 +1,1 @@
+private_key_path = "/Users/hungai/SRE/terraform/aws/kafka_cluster.pem"
