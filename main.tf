@@ -77,8 +77,8 @@ resource "aws_route_table" "rtb" {
 
 resource "aws_route_table_association" "rta-subnet" {
   count          = var.subnet_count
-  subnet_id = aws_subnet.subnet[count.index].id
-  route_table_id   = aws_route_table.rtb.id
+  subnet_id      = aws_subnet.subnet[count.index].id
+  route_table_id = aws_route_table.rtb.id
 }
 
 # SECURITY GROUPS
